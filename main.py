@@ -210,6 +210,63 @@ def verify_token_endpoint(req: TokenRequest):
 def health_check():
     return {"status": "ok", "service": "user-auth-service"}
 
+@app.get("/admin/users", summary="获取所有用户列表（管理员接口）")
+def get_all_users():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("""
+            SELECT user_id, username, email, phone, created_at, last_login 
+            FROM users 
+            ORDER BY created_at DESC
+        """)
+        
+        users = cursor.fetchall()
+        
+        user_list = []
+        for user in users:
+            user_list.append({
+                "user_id": user[0],
+                "username": user[1],
+                "email": user[2],
+                "phone": user[3],
+                "created_at": user[4],
+                "last_login": user[5]
+            })
+        
+        return {
+            "success": True,
+            "total": len(user_list),
+            "users": user_list
+        }
+        
+    finally:
+        conn.close()
+
+@app.get("/admin/stats", summary="获取用户统计信息")
+def get_user_stats():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE('now')")
+        active_today = cursor.fetchone()[0]
+        
+        return {
+            "success": True,
+            "stats": {
+                "total_users": total_users,
+                "active_today": active_today
+            }
+        }
+        
+    finally:
+        conn.close()
+
 init_database()
 
 if __name__ == "__main__":
