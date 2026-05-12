@@ -9,3 +9,11 @@ services:
     envVars:
       - key: SECRET_KEY
         generateValue: true
+      - key: DB_HOST
+        value: ""
+      - key: DB_USER
+        value: ""
+      - key: DB_PASSWORD
+        value: ""
+      - key: DB_NAME
+        value: ""

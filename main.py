@@ -1,41 +1,68 @@
 from fastapi import FastAPI, HTTPException, Header, Depends
 from pydantic import BaseModel
 from typing import Optional, Dict
-import sqlite3
 import jwt
 import datetime
-from pathlib import Path
 import os
+
+try:
+    import pymysql
+    DB_TYPE = "mysql"
+except ImportError:
+    import sqlite3
+    DB_TYPE = "sqlite"
 
 app = FastAPI(title="用户认证服务", version="1.0.0")
 
-DATABASE_PATH = Path("./user_database.db")
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 
+def get_db_connection():
+    database_url = os.getenv("DATABASE_URL")
+    
+    if database_url and DB_TYPE == "mysql":
+        try:
+            conn = pymysql.connect(
+                host=os.getenv("DB_HOST"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                database=os.getenv("DB_NAME"),
+                ssl={"ssl_mode": "REQUIRED"}
+            )
+            return conn
+        except Exception as e:
+            print(f"MySQL连接失败，回退到SQLite: {e}")
+    
+    import sqlite3
+    from pathlib import Path
+    DATABASE_PATH = Path("./user_database.db")
+    return sqlite3.connect(str(DATABASE_PATH))
+
 def init_database():
-    conn = sqlite3.connect(str(DATABASE_PATH))
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute("""
+    create_table_sql = """
         CREATE TABLE IF NOT EXISTS users (
-            user_id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            email TEXT,
-            phone TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
+            user_id VARCHAR(20) PRIMARY KEY,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            password VARCHAR(100) NOT NULL,
+            email VARCHAR(100),
+            phone VARCHAR(20),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_login DATETIME
         )
-    """)
+    """
     
-    conn.commit()
-    conn.close()
-    print("✅ 用户数据库初始化完成")
-
-def get_db_connection():
-    return sqlite3.connect(str(DATABASE_PATH))
+    try:
+        cursor.execute(create_table_sql)
+        conn.commit()
+        print("✅ 用户数据库初始化完成")
+    except Exception as e:
+        print(f"数据库初始化错误: {e}")
+    finally:
+        conn.close()
 
 def generate_token(user_id: str, username: str) -> str:
     payload = {
@@ -94,7 +121,7 @@ def register(req: RegisterRequest):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT user_id FROM users WHERE username = ?", (req.username,))
+        cursor.execute("SELECT user_id FROM users WHERE username = %s", (req.username,))
         if cursor.fetchone():
             raise HTTPException(
                 status_code=400,
@@ -103,7 +130,7 @@ def register(req: RegisterRequest):
         
         user_id = generate_user_id()
         
-        cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (?, ?, ?, ?, ?)",
+        cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (%s, %s, %s, %s, %s)",
                        (user_id, req.username, req.password, req.email, req.phone))
         
         conn.commit()
@@ -125,7 +152,7 @@ def login(req: LoginRequest):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT user_id, username, password FROM users WHERE username = ?", (req.username,))
+        cursor.execute("SELECT user_id, username, password FROM users WHERE username = %s", (req.username,))
         user = cursor.fetchone()
         
         if not user:
@@ -136,7 +163,7 @@ def login(req: LoginRequest):
         if req.password != stored_password:
             raise HTTPException(status_code=401, detail={"success": False, "error": "wrong_password", "message": "密码错误"})
         
-        cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+        cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = %s", (user_id,))
         conn.commit()
         
         token = generate_token(user_id, req.username)
@@ -170,7 +197,7 @@ def get_user_profile(current_user: Dict = Depends(get_current_user)):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = ?",
+        cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = %s",
                        (current_user["user_id"],))
         
         user = cursor.fetchone()
@@ -179,7 +206,7 @@ def get_user_profile(current_user: Dict = Depends(get_current_user)):
             raise HTTPException(status_code=404, detail={"success": False, "message": "用户不存在"})
         
         return {"success": True, "user": {"user_id": user[0], "username": user[1], "email": user[2], 
-                                          "phone": user[3], "created_at": user[4], "last_login": user[5]}}
+                                          "phone": user[3], "created_at": str(user[4]), "last_login": str(user[5])}}
         
     finally:
         conn.close()
@@ -195,7 +222,7 @@ def verify_token_endpoint(req: TokenRequest):
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = ?", (result["user_id"],))
+        cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = %s", (result["user_id"],))
         user = cursor.fetchone()
         
         if user:
@@ -208,7 +235,7 @@ def verify_token_endpoint(req: TokenRequest):
 
 @app.get("/health", summary="健康检查")
 def health_check():
-    return {"status": "ok", "service": "user-auth-service"}
+    return {"status": "ok", "service": "user-auth-service", "db_type": DB_TYPE}
 
 @app.get("/admin/users", summary="获取所有用户列表（管理员接口）")
 def get_all_users():
@@ -216,11 +243,7 @@ def get_all_users():
     cursor = conn.cursor()
     
     try:
-        cursor.execute("""
-            SELECT user_id, username, email, phone, created_at, last_login 
-            FROM users 
-            ORDER BY created_at DESC
-        """)
+        cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
         
         users = cursor.fetchall()
         
@@ -231,8 +254,8 @@ def get_all_users():
                 "username": user[1],
                 "email": user[2],
                 "phone": user[3],
-                "created_at": user[4],
-                "last_login": user[5]
+                "created_at": str(user[4]),
+                "last_login": str(user[5]) if user[5] else None
             })
         
         return {
@@ -253,7 +276,7 @@ def get_user_stats():
         cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE('now')")
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE(NOW())")
         active_today = cursor.fetchone()[0]
         
         return {
