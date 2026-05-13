@@ -101,13 +101,6 @@ def generate_user_id() -> str:
     import random
     return str(random.randint(100000, 999999))
 
-def db_query(cursor, query, params=()):
-    if DB_TYPE == "postgresql":
-        cursor.execute(query, params)
-    else:
-        query = query.replace("%s", "?")
-        cursor.execute(query, params)
-
 @app.post("/register", summary="用户注册")
 def register(req: RegisterRequest):
     if not req.username or len(req.username) < 3:
@@ -126,7 +119,11 @@ def register(req: RegisterRequest):
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT user_id FROM users WHERE username = %s", (req.username,))
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT user_id FROM users WHERE username = %s", (req.username,))
+        else:
+            cursor.execute("SELECT user_id FROM users WHERE username = ?", (req.username,))
+            
         if cursor.fetchone():
             raise HTTPException(
                 status_code=400,
@@ -135,8 +132,12 @@ def register(req: RegisterRequest):
         
         user_id = generate_user_id()
         
-        db_query(cursor, "INSERT INTO users (user_id, username, password, email, phone) VALUES (%s, %s, %s, %s, %s)",
-                       (user_id, req.username, req.password, req.email, req.phone))
+        if DB_TYPE == "postgresql":
+            cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (%s, %s, %s, %s, %s)",
+                           (user_id, req.username, req.password, req.email, req.phone))
+        else:
+            cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (?, ?, ?, ?, ?)",
+                           (user_id, req.username, req.password, req.email, req.phone))
         
         conn.commit()
         token = generate_token(user_id, req.username)
@@ -157,7 +158,11 @@ def login(req: LoginRequest):
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT user_id, username, password FROM users WHERE username = %s", (req.username,))
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT user_id, username, password FROM users WHERE username = %s", (req.username,))
+        else:
+            cursor.execute("SELECT user_id, username, password FROM users WHERE username = ?", (req.username,))
+            
         user = cursor.fetchone()
         
         if not user:
@@ -168,7 +173,11 @@ def login(req: LoginRequest):
         if req.password != stored_password:
             raise HTTPException(status_code=401, detail={"success": False, "error": "wrong_password", "message": "密码错误"})
         
-        db_query(cursor, "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = %s", (user_id,))
+        if DB_TYPE == "postgresql":
+            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
+            
         conn.commit()
         
         token = generate_token(user_id, req.username)
@@ -202,9 +211,13 @@ def get_user_profile(current_user: Dict = Depends(get_current_user)):
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = %s",
-                       (current_user["user_id"],))
-        
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = %s",
+                           (current_user["user_id"],))
+        else:
+            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = ?",
+                           (current_user["user_id"],))
+            
         user = cursor.fetchone()
         
         if not user:
@@ -227,7 +240,11 @@ def verify_token_endpoint(req: TokenRequest):
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT user_id, username, email, phone FROM users WHERE user_id = %s", (result["user_id"],))
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = %s", (result["user_id"],))
+        else:
+            cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = ?", (result["user_id"],))
+            
         user = cursor.fetchone()
         
         if user:
@@ -248,7 +265,10 @@ def get_all_users():
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
+        else:
+            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
         
         users = cursor.fetchall()
         
@@ -278,10 +298,18 @@ def get_user_stats():
     cursor = conn.cursor()
     
     try:
-        db_query(cursor, "SELECT COUNT(*) FROM users")
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT COUNT(*) FROM users")
+        else:
+            cursor.execute("SELECT COUNT(*) FROM users")
+            
         total_users = cursor.fetchone()[0]
         
-        db_query(cursor, "SELECT COUNT(*) FROM users WHERE DATE(last_login) = CURRENT_DATE")
+        if DB_TYPE == "postgresql":
+            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = CURRENT_DATE")
+        else:
+            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE('now')")
+            
         active_today = cursor.fetchone()[0]
         
         return {
