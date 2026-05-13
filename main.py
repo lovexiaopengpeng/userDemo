@@ -4,50 +4,30 @@ from typing import Optional, Dict
 import jwt
 import datetime
 import os
-
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    DB_TYPE = "postgresql"
-except ImportError:
-    DB_TYPE = "sqlite"
+import sqlite3
+from pathlib import Path
 
 app = FastAPI(title="用户认证服务", version="1.0.0")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
+DATABASE_PATH = Path("./user_database.db")
 
 def get_db_connection():
-    database_url = os.getenv("DATABASE_URL")
-    
-    if database_url and DB_TYPE == "postgresql":
-        try:
-            conn = psycopg2.connect(database_url, sslmode="require")
-            return conn
-        except Exception as e:
-            print(f"PostgreSQL连接失败，回退到SQLite: {e}")
-    
-    import sqlite3
-    from pathlib import Path
-    DATABASE_PATH = Path("./user_database.db")
     return sqlite3.connect(str(DATABASE_PATH))
 
 def init_database():
     conn = get_db_connection()
-    
-    if DB_TYPE == "postgresql":
-        cursor = conn.cursor()
-    else:
-        cursor = conn.cursor()
+    cursor = conn.cursor()
     
     create_table_sql = """
         CREATE TABLE IF NOT EXISTS users (
-            user_id VARCHAR(20) PRIMARY KEY,
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password VARCHAR(100) NOT NULL,
-            email VARCHAR(100),
-            phone VARCHAR(20),
+            user_id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            email TEXT,
+            phone TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_login TIMESTAMP
         )
@@ -119,11 +99,7 @@ def register(req: RegisterRequest):
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT user_id FROM users WHERE username = %s", (req.username,))
-        else:
-            cursor.execute("SELECT user_id FROM users WHERE username = ?", (req.username,))
-            
+        cursor.execute("SELECT user_id FROM users WHERE username = ?", (req.username,))
         if cursor.fetchone():
             raise HTTPException(
                 status_code=400,
@@ -132,12 +108,8 @@ def register(req: RegisterRequest):
         
         user_id = generate_user_id()
         
-        if DB_TYPE == "postgresql":
-            cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (%s, %s, %s, %s, %s)",
-                           (user_id, req.username, req.password, req.email, req.phone))
-        else:
-            cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (?, ?, ?, ?, ?)",
-                           (user_id, req.username, req.password, req.email, req.phone))
+        cursor.execute("INSERT INTO users (user_id, username, password, email, phone) VALUES (?, ?, ?, ?, ?)",
+                       (user_id, req.username, req.password, req.email, req.phone))
         
         conn.commit()
         token = generate_token(user_id, req.username)
@@ -158,11 +130,7 @@ def login(req: LoginRequest):
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT user_id, username, password FROM users WHERE username = %s", (req.username,))
-        else:
-            cursor.execute("SELECT user_id, username, password FROM users WHERE username = ?", (req.username,))
-            
+        cursor.execute("SELECT user_id, username, password FROM users WHERE username = ?", (req.username,))
         user = cursor.fetchone()
         
         if not user:
@@ -173,11 +141,7 @@ def login(req: LoginRequest):
         if req.password != stored_password:
             raise HTTPException(status_code=401, detail={"success": False, "error": "wrong_password", "message": "密码错误"})
         
-        if DB_TYPE == "postgresql":
-            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = %s", (user_id,))
-        else:
-            cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
-            
+        cursor.execute("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
         conn.commit()
         
         token = generate_token(user_id, req.username)
@@ -211,20 +175,16 @@ def get_user_profile(current_user: Dict = Depends(get_current_user)):
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = %s",
-                           (current_user["user_id"],))
-        else:
-            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = ?",
-                           (current_user["user_id"],))
-            
+        cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users WHERE user_id = ?",
+                       (current_user["user_id"],))
+        
         user = cursor.fetchone()
         
         if not user:
             raise HTTPException(status_code=404, detail={"success": False, "message": "用户不存在"})
         
         return {"success": True, "user": {"user_id": user[0], "username": user[1], "email": user[2], 
-                                          "phone": user[3], "created_at": str(user[4]), "last_login": str(user[5])}}
+                                          "phone": user[3], "created_at": user[4], "last_login": user[5]}}
         
     finally:
         conn.close()
@@ -240,11 +200,7 @@ def verify_token_endpoint(req: TokenRequest):
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = %s", (result["user_id"],))
-        else:
-            cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = ?", (result["user_id"],))
-            
+        cursor.execute("SELECT user_id, username, email, phone FROM users WHERE user_id = ?", (result["user_id"],))
         user = cursor.fetchone()
         
         if user:
@@ -257,7 +213,7 @@ def verify_token_endpoint(req: TokenRequest):
 
 @app.get("/health", summary="健康检查")
 def health_check():
-    return {"status": "ok", "service": "user-auth-service", "db_type": DB_TYPE}
+    return {"status": "ok", "service": "user-auth-service", "db_type": "sqlite"}
 
 @app.get("/admin/users", summary="获取所有用户列表（管理员接口）")
 def get_all_users():
@@ -265,10 +221,7 @@ def get_all_users():
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
-        else:
-            cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
+        cursor.execute("SELECT user_id, username, email, phone, created_at, last_login FROM users ORDER BY created_at DESC")
         
         users = cursor.fetchall()
         
@@ -279,8 +232,8 @@ def get_all_users():
                 "username": user[1],
                 "email": user[2],
                 "phone": user[3],
-                "created_at": str(user[4]),
-                "last_login": str(user[5]) if user[5] else None
+                "created_at": user[4],
+                "last_login": user[5] if user[5] else None
             })
         
         return {
@@ -298,18 +251,10 @@ def get_user_stats():
     cursor = conn.cursor()
     
     try:
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT COUNT(*) FROM users")
-        else:
-            cursor.execute("SELECT COUNT(*) FROM users")
-            
+        cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
-        if DB_TYPE == "postgresql":
-            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = CURRENT_DATE")
-        else:
-            cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE('now')")
-            
+        cursor.execute("SELECT COUNT(*) FROM users WHERE DATE(last_login) = DATE('now')")
         active_today = cursor.fetchone()[0]
         
         return {
